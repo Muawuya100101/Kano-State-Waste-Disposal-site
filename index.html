@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kano State Plastic Recovery and Recycling Portal</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- Load Firebase/Firestore Modules -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let firebaseConfig;
+        try {
+            firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        } catch (e) {
+            console.error("Failed to parse firebase config:", e);
+            firebaseConfig = {};
+        }
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let db, auth, userId = null;
+        let isAuthReady = false;
+
+        // Make functions accessible globally for the main script block
+        window.initFirebase = async () => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                console.error("Firebase configuration is missing. Data storage will not work.");
+                document.getElementById('db-status').textContent = '⚠️ DB Unavailable (Missing Config)';
+                isAuthReady = true; // Mark ready anyway to unblock UI
+                return;
+            }
+
+            try {
+                // Set Firestore log level for debugging
+                setLogLevel('Debug');
+                
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                window.db = db; // Attach to window for use in the main script
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('db-status').textContent = `✅ Ready (User ID: ${userId.substring(0, 8)}...)`;
+                        isAuthReady = true;
+                        window.loadDataAndListeners(); // Load data once ready
+                    } else {
+                        // Sign in using custom token or anonymously if token is missing
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(auth);
+                        }
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase initialization failed:", error);
+                document.getElementById('db-status').textContent = '❌ DB Failed to Init';
+                isAuthReady = true; // Mark ready to unblock UI
+            }
+        };
+
+        window.submitPlasticReport = async (data) => {
+            if (!db || !userId) {
+                console.error("Database or User ID is not ready.");
+                document.getElementById('submission-result').textContent = 'Error: System not ready. Please try again.';
+                document.getElementById('submission-result').classList.remove('hidden');
+                return;
+            }
+
+            try {
+                // Public collection for submissions, visible to all (e.g., agents/centers)
+                const collectionPath = `artifacts/${appId}/public/data/plastic_submissions`;
+                
+                const reportData = {
+                    ...data,
+                    userId: userId,
+                    timestamp: serverTimestamp(),
+                    status: 'Pending',
+                    reward_points: 0 // Initial points
+                };
+
+                const docRef = await addDoc(collection(db, collectionPath), reportData);
+                console.log("Document written with ID: ", docRef.id);
+                return { success: true, id: docRef.id };
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                return { success: false, error: e.message };
+            }
+        };
+
+        window.setupDisposalCentersListener = (callback) => {
+            if (!db || !isAuthReady) return;
+
+            // Simple mock data for centers in a public collection
+            const centersData = [
+                { name: "Kofar Mata Recycling Hub", lat: 11.99, lon: 8.52, hours: "Mon-Sat, 8am-4pm", address: "12 Kofar Mata Rd, Kano" },
+                { name: "Sabon Gari Collection Point", lat: 12.01, lon: 8.54, hours: "24/7", address: "Opposite Post Office, Sabon Gari" },
+                { name: "Challenge Academy Drop Zone", lat: 11.95, lon: 8.47, hours: "School Hours Only", address: "Challenge Academy, Gwale" }
+            ];
+
+            callback(centersData); 
+        };
+
+        window.setupRewardsListener = (callback) => {
+             if (!db || !isAuthReady || !userId) return;
+
+            // Private collection for user-specific rewards
+            const rewardsRef = collection(db, `artifacts/${appId}/users/${userId}/rewards_ledger`);
+            
+            // For simplicity, we'll fetch all past submissions and calculate points client-side
+            const submissionsRef = collection(db, `artifacts/${appId}/public/data/plastic_submissions`);
+            const q = query(submissionsRef, where("userId", "==", userId));
+
+            // Listen for changes to the user's submissions to update rewards
+            return onSnapshot(q, (snapshot) => {
+                let totalPoints = 0;
+                const activityLog = [];
+
+                snapshot.docs.forEach(doc => {
+                    const data = doc.data();
+                    // Simple point calculation: 10 points per item/kg
+                    const points = (data.quantity || 0) * 10;
+                    totalPoints += points;
+                    activityLog.push({
+                        date: data.timestamp ? new Date(data.timestamp.toDate()).toLocaleDateString() : 'Pending',
+                        type: data.plasticType,
+                        quantity: data.quantity,
+                        points: points,
+                        status: data.status
+                    });
+                });
+
+                callback(totalPoints, activityLog);
+            });
+        };
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        :root {
+            --color-kano-green: #065f46; /* Tailwind green-800 */
+            --color-kano-gold: #FBBF24; /* Tailwind amber-400 */
+            --color-challenge-blue: #1E40AF; /* Tailwind blue-800 */
+            --color-text-light: #F9FAFB;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F9FAFB; /* Off-white background */
+        }
+        /* Custom map styling to look official */
+        .map-placeholder {
+            min-height: 400px;
+            background: #E5E7EB; /* Gray background for map box */
+            border: 2px solid var(--color-kano-green);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #4B5563;
+            font-weight: 600;
+        }
+    </style>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'kano-green': 'var(--color-kano-green)',
+                        'kano-gold': 'var(--color-kano-gold)',
+                        'challenge-blue': 'var(--color-challenge-blue)',
+                    }
+                }
+            }
+        }
+
+        // --- SPA NAVIGATION LOGIC ---
+        function navigate(pageId) {
+            const pages = document.querySelectorAll('.page-section');
+            pages.forEach(page => {
+                page.classList.add('hidden');
+            });
+            
+            const targetPage = document.getElementById(pageId);
+            if (targetPage) {
+                targetPage.classList.remove('hidden');
+                document.querySelectorAll('nav a').forEach(link => {
+                    link.classList.remove('font-bold', 'text-kano-gold', 'bg-kano-green/10');
+                    link.classList.add('text-gray-200', 'hover:text-kano-gold');
+                });
+                document.querySelector(`nav a[onclick="navigate('${pageId}')"]`)?.classList.add('font-bold', 'text-kano-gold', 'bg-kano-green/10');
+                document.querySelector(`nav a[onclick="navigate('${pageId}')"]`)?.classList.remove('text-gray-200');
+            }
+        }
+
+        // --- FORM SUBMISSION LOGIC ---
+        async function handleSubmission(event) {
+            event.preventDefault();
+            const form = event.target;
+            const resultDiv = document.getElementById('submission-result');
+            const submitBtn = document.getElementById('submit-btn');
+
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Submitting...';
+            resultDiv.classList.add('hidden');
+
+            const submissionData = {
+                name: form.name.value,
+                plasticType: form.plasticType.value,
+                quantity: parseFloat(form.quantity.value),
+                location: form.location.value,
+                preference: form.preference.value,
+            };
+
+            // Call the global function exposed by the module script
+            const response = await window.submitPlasticReport(submissionData);
+
+            if (response.success) {
+                form.reset();
+                let message = `Submission successful (ID: ${response.id.substring(0, 8)}...). You will be contacted shortly.`;
+                
+                if (submissionData.preference === 'Drop-off') {
+                    const center = window.disposalCenters[Math.floor(Math.random() * window.disposalCenters.length)];
+                    message += `<br>Your nearest suggested Drop-off Center is: <strong>${center.name}</strong> (${center.address}).`;
+                } else {
+                    message += `<br>Estimated collection time: **Within 24-48 hours**. Please secure your waste.`;
+                }
+                
+                resultDiv.innerHTML = `<i data-lucide="check-circle" class="w-5 h-5 inline-block mr-2 text-kano-green"></i>` + message;
+                resultDiv.classList.remove('hidden', 'text-red-600');
+                resultDiv.classList.add('text-kano-green', 'bg-kano-green/10', 'border-kano-green');
+
+            } else {
+                resultDiv.innerHTML = `<i data-lucide="x-circle" class="w-5 h-5 inline-block mr-2 text-red-600"></i>Submission failed: ${response.error}.`;
+                resultDiv.classList.remove('hidden', 'text-kano-green');
+                resultDiv.classList.add('text-red-600', 'bg-red-600/10', 'border-red-600');
+            }
+
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Submit Report';
+
+            // Re-render Lucide icons
+            lucide.createIcons();
+        }
+
+        // --- DATA LOADERS AND RENDERERS ---
+        window.loadDataAndListeners = () => {
+            // 1. Centers Data
+            window.setupDisposalCentersListener(renderDisposalCenters);
+
+            // 2. Rewards Data
+            window.setupRewardsListener(renderRewards);
+        };
+
+        let windowWidth = window.innerWidth;
+        window.addEventListener('resize', () => {
+            if (Math.abs(window.innerWidth - windowWidth) > 50) {
+                 windowWidth = window.innerWidth;
+                 // Re-render icons on major resize (especially for mobile to desktop)
+                 lucide.createIcons();
+            }
+        });
+
+
+        function renderDisposalCenters(centers) {
+            window.disposalCenters = centers; // Store globally for submission page
+            const container = document.getElementById('centers-list-container');
+            container.innerHTML = ''; // Clear previous
+            
+            centers.forEach(center => {
+                const centerHtml = `
+                    <div class="bg-white p-4 rounded-lg shadow-md hover:shadow-lg transition duration-300 border-l-4 border-kano-green">
+                        <h4 class="text-xl font-semibold text-kano-green">${center.name}</h4>
+                        <p class="text-gray-600 mt-1 flex items-center"><i data-lucide="map-pin" class="w-4 h-4 mr-2 text-kano-gold"></i>${center.address}</p>
+                        <p class="text-gray-600 flex items-center"><i data-lucide="clock" class="w-4 h-4 mr-2 text-gray-500"></i>${center.hours}</p>
+                        <a href="#" class="text-challenge-blue hover:underline mt-2 inline-block text-sm font-medium">Get Directions (Map coordinates: ${center.lat}, ${center.lon})</a>
+                    </div>
+                `;
+                container.innerHTML += centerHtml;
+            });
+            // Re-render Lucide icons
+            lucide.createIcons();
+        }
+
+        function renderRewards(totalPoints, activityLog) {
+            document.getElementById('total-points').textContent = totalPoints;
+
+            const activityContainer = document.getElementById('rewards-activity');
+            activityContainer.innerHTML = '';
+
+            if (activityLog.length === 0) {
+                 activityContainer.innerHTML = '<p class="text-gray-500 italic">No recycling activity recorded yet. Submit your first plastic report!</p>';
+                 return;
+            }
+
+            // Sort by date descending (newest first)
+            activityLog.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+            activityLog.forEach(activity => {
+                const statusClass = activity.status === 'Pending' ? 'text-kano-gold' : 'text-kano-green';
+                const statusIcon = activity.status === 'Pending' ? 'loader' : 'check-circle';
+
+                const row = `
+                    <tr class="border-b last:border-b-0 hover:bg-gray-50 transition">
+                        <td class="px-6 py-3 text-sm text-gray-600">${activity.date}</td>
+                        <td class="px-6 py-3 text-sm font-medium text-gray-900">${activity.type} (${activity.quantity} units/kg)</td>
+                        <td class="px-6 py-3 text-sm font-bold text-kano-green">${activity.points}</td>
+                        <td class="px-6 py-3 text-sm font-medium ${statusClass} flex items-center">
+                            <i data-lucide="${statusIcon}" class="w-4 h-4 mr-1 ${statusClass}"></i>
+                            ${activity.status}
+                        </td>
+                    </tr>
+                `;
+                activityContainer.innerHTML += row;
+            });
+
+            // Re-render Lucide icons
+            lucide.createIcons();
+        }
+
+        // Initialize Firebase and start the app
+        window.onload = () => {
+            window.initFirebase();
+            navigate('homepage'); // Start on the homepage
+            lucide.createIcons();
+        };
+
+        // Function to report illegal dumping (simulated)
+        function reportDumping() {
+            const message = "Thank you for being vigilant. Please call the Kano State Environmental Hotline at 08030719901 or proceed to the Submission Page and select 'Pick-up' with details about the illegal site's location.";
+            document.getElementById('dumping-message').textContent = message;
+            document.getElementById('dumping-message').classList.remove('hidden');
+        }
+    </script>
+</head>
+
+<body>
+    <!-- Header -->
+    <header class="bg-kano-green shadow-lg sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col md:flex-row justify-between items-center">
+            
+            <!-- Left Side: Kano State Logo -->
+            <div class="flex items-center space-x-4 mb-3 md:mb-0">
+                <img src="uploaded:kano state Government logo.jfif-6f89468a-03f3-4e62-af5e-56bc23bf06aa" alt="Kano State Government Logo" class="h-12 w-12 object-contain p-0.5 bg-white rounded-full border-2 border-kano-gold">
+                <h1 class="text-xl font-bold text-white tracking-wider">Kano State</h1>
+            </div>
+
+            <!-- Center: Title & Developer Credit (Enlarged) -->
+            <div class="text-center md:text-left text-white max-w-lg">
+                <p class="text-lg font-bold">Kano State Plastic Recovery and Recycling Portal</p>
+                <p class="block font-extrabold text-kano-gold text-xl mt-1 tracking-wide">
+                    Developed by Muhammad Muawuya, Challenge International Academy
+                </p>
+            </div>
+
+            <!-- Right Side: School Logo -->
+            <div class="flex items-center space-x-2 mt-3 md:mt-0">
+                <h2 class="text-sm font-semibold text-white">Challenge Academy</h2>
+                <img src="uploaded:IMG-20250831-WA0015_1_-removebg-preview.png-ad727b5b-2b4f-4784-87ae-d25fd5fdf133" alt="Challenge International Academy Logo" class="h-12 w-12 object-contain p-0.5 bg-white rounded-full border-2 border-white">
+            </div>
+        </div>
+
+        <!-- Database Status Indicator (Crucial for presentation) -->
+        <div class="text-xs text-center p-1 bg-black/20 text-white/80" id="db-status">
+            Loading System Status...
+        </div>
+
+    </header>
+
+    <!-- Navigation -->
+    <nav class="bg-kano-green border-t border-kano-gold/50 shadow-inner">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex flex-wrap justify-center sm:justify-between space-x-1 sm:space-x-4 py-2">
+                <a href="#" onclick="navigate('homepage')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">Home</a>
+                <a href="#" onclick="navigate('how-it-works')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">How It Works</a>
+                <a href="#" onclick="navigate('submission-page')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">Report Plastic</a>
+                <a href="#" onclick="navigate('centers-page')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">Disposal Centers</a>
+                <a href="#" onclick="navigate('rewards-page')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">Rewards</a>
+                <a href="#" onclick="navigate('about-contact')" class="text-gray-200 hover:text-kano-gold px-3 py-2 rounded-md text-sm font-medium transition duration-150">About & Contact</a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Container -->
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+        <!-- 1. Homepage Section -->
+        <section id="homepage" class="page-section hidden">
+            <div class="text-center bg-white p-8 md:p-12 rounded-xl shadow-2xl border-t-8 border-kano-gold">
+                <h2 class="text-4xl sm:text-5xl font-extrabold text-kano-green mb-4">
+                    Kano State Environmental Recovery Initiative
+                </h2>
+                <p class="text-xl text-gray-700 max-w-3xl mx-auto mb-8">
+                    Together, let’s make Kano cleaner and greener. Report and recycle your plastics today to protect our health and environment.
+                </p>
+                <button onclick="navigate('submission-page')" class="bg-kano-gold text-kano-green hover:bg-kano-gold/80 font-bold py-3 px-8 rounded-full shadow-lg transform transition duration-300 hover:scale-105 flex items-center justify-center mx-auto text-lg">
+                    <i data-lucide="recycle" class="w-6 h-6 mr-2"></i>
+                    Submit Your Plastic Report Now
+                </button>
+                <button onclick="reportDumping()" class="mt-4 text-sm text-challenge-blue hover:text-challenge-blue/80 font-medium transition">
+                    Or, Report Illegal Dumping Site
+                </button>
+                <p id="dumping-message" class="hidden mt-4 p-3 bg-red-100 text-red-700 rounded-lg border border-red-300 text-sm"></p>
+            </div>
+        </section>
+
+        <!-- 2. How It Works Section -->
+        <section id="how-it-works" class="page-section hidden">
+            <h2 class="text-3xl font-bold text-kano-green mb-8 border-b-2 pb-2 border-kano-gold">How It Works: Our Simple 3-Step Process</h2>
+            
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Step 1 -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-kano-green text-center">
+                    <div class="p-4 bg-kano-green/10 rounded-full inline-block mb-4">
+                        <i data-lucide="list-checks" class="w-8 h-8 text-kano-green"></i>
+                    </div>
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">1. Select Your Plastic</h3>
+                    <p class="text-gray-600">Identify the type and quantity of plastic waste you have (e.g., PET bottles - *Robar Ruwa*, Nylon - *Leda*, PVC - *bukiti*).</p>
+                </div>
+                <!-- Step 2 -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-kano-green text-center">
+                    <div class="p-4 bg-kano-green/10 rounded-full inline-block mb-4">
+                        <i data-lucide="map-pin" class="w-8 h-8 text-kano-green"></i>
+                    </div>
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">2. Enter Location Details</h3>
+                    <p class="text-gray-600">Provide your address or use your device’s GPS location so our agents can locate you accurately.</p>
+                </div>
+                <!-- Step 3 -->
+                <div class="bg-white p-6 rounded-xl shadow-lg border-t-4 border-kano-green text-center">
+                    <div class="p-4 bg-kano-green/10 rounded-full inline-block mb-4">
+                        <i data-lucide="dollar-sign" class="w-8 h-8 text-kano-green"></i>
+                    </div>
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">3. Dispose & Earn Reward</h3>
+                    <p class="text-gray-600">Choose Drop-off or Pick-up. Once collected, you instantly earn reward points redeemable for money or goods.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 3. Plastic Submission Page Section -->
+        <section id="submission-page" class="page-section hidden">
+            <h2 class="text-3xl font-bold text-kano-green mb-8 border-b-2 pb-2 border-kano-gold">Plastic Submission Form</h2>
+            <div class="bg-white p-6 rounded-xl shadow-lg max-w-3xl mx-auto">
+                <form onsubmit="handleSubmission(event)">
+                    
+                    <div class="mb-5">
+                        <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Your Name (for verification)</label>
+                        <input type="text" id="name" name="name" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-kano-green focus:border-kano-green transition">
+                    </div>
+
+                    <div class="grid sm:grid-cols-2 gap-5 mb-5">
+                        <div>
+                            <label for="plasticType" class="block text-sm font-medium text-gray-700 mb-1">Type of Plastic</label>
+                            <select id="plasticType" name="plasticType" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-kano-green focus:border-kano-green transition">
+                                <option value="">-- Select Type --</option>
+                                <option value="PET (Robar Ruwa)">PET Bottles (Robar Ruwa)</option>
+                                <option value="HDPE/LDPE (Leda)">Nylon Bags (Leda)</option>
+                                <option value="PVC (Bukiti)">PVC Items (Buckets, Pipes)</option>
+                                <option value="Mixed Film">Mixed Plastic Film/Wrappers</option>
+                                <option value="Others">Other Hard Plastics</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="quantity" class="block text-sm font-medium text-gray-700 mb-1">Quantity (approx. in kg or number of bags)</label>
+                            <input type="number" id="quantity" name="quantity" min="1" required class="w-full p-3 border border-gray-300 rounded-lg focus:ring-kano-green focus:border-kano-green transition">
+                        </div>
+                    </div>
+
+                    <div class="mb-5">
+                        <label for="location" class="block text-sm font-medium text-gray-700 mb-1">Address / GPS Location Description</label>
+                        <textarea id="location" name="location" rows="3" required placeholder="E.g., No 5, Hausa Road, Kofar Wambai or 'My current GPS location is active'" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-kano-green focus:border-kano-green transition"></textarea>
+                    </div>
+
+                    <div class="mb-6">
+                        <label for="preference" class="block text-sm font-medium text-gray-700 mb-2">Preferred Option</label>
+                        <div class="flex space-x-6">
+                            <label class="inline-flex items-center">
+                                <input type="radio" name="preference" value="Pick-up" required class="form-radio text-kano-green h-4 w-4">
+                                <span class="ml-2 text-gray-700 flex items-center"><i data-lucide="truck" class="w-4 h-4 mr-1"></i> Government Pick-up</span>
+                            </label>
+                            <label class="inline-flex items-center">
+                                <input type="radio" name="preference" value="Drop-off" required class="form-radio text-kano-green h-4 w-4">
+                                <span class="ml-2 text-gray-700 flex items-center"><i data-lucide="send" class="w-4 h-4 mr-1"></i> Drop-off at Center</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="submit-btn" class="w-full bg-kano-green text-white hover:bg-kano-green/90 font-bold py-3 px-4 rounded-lg shadow-md transition duration-200 flex items-center justify-center">
+                        <i data-lucide="send" class="w-5 h-5 mr-2"></i>
+                        Submit Report
+                    </button>
+                </form>
+
+                <p id="submission-result" class="hidden mt-4 p-4 rounded-lg border text-sm font-medium"></p>
+            </div>
+        </section>
+
+        <!-- 4. Disposal Centers Page Section -->
+        <section id="centers-page" class="page-section hidden">
+            <h2 class="text-3xl font-bold text-kano-green mb-8 border-b-2 pb-2 border-kano-gold">Official Disposal & Recycling Centers</h2>
+            
+            <div class="map-placeholder rounded-xl shadow-inner mb-6 text-xl">
+                <p><i data-lucide="map" class="w-8 h-8 inline-block mr-2"></i> Interactive Map Placeholder (Showing Real-time Locations)</p>
+            </div>
+
+            <h3 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center"><i data-lucide="list-end" class="w-5 h-5 mr-2 text-kano-gold"></i> Registered Center List</h3>
+            <div class="grid md:grid-cols-2 gap-6" id="centers-list-container">
+                <!-- Centers will be dynamically populated here by renderDisposalCenters() -->
+                <p class="text-gray-500 italic p-4">Loading disposal center data...</p>
+            </div>
+        </section>
+
+        <!-- 5. Rewards Page Section -->
+        <section id="rewards-page" class="page-section hidden">
+            <h2 class="text-3xl font-bold text-kano-green mb-8 border-b-2 pb-2 border-kano-gold">Recycling Rewards Program</h2>
+
+            <!-- Point Summary -->
+            <div class="bg-kano-green text-white p-6 rounded-xl shadow-lg mb-6 flex justify-between items-center">
+                <div>
+                    <p class="text-lg font-medium">Your Total Reward Points:</p>
+                    <p class="text-5xl font-extrabold text-kano-gold" id="total-points">0</p>
+                </div>
+                <div class="text-right">
+                    <p class="text-sm italic">100 Points = NGN 100</p>
+                    <button class="mt-2 bg-kano-gold text-kano-green font-semibold py-2 px-4 rounded-full hover:bg-kano-gold/80 transition shadow">
+                        <i data-lucide="wallet" class="w-4 h-4 inline-block mr-1"></i> Redeem Points
+                    </button>
+                </div>
+            </div>
+
+            <!-- Program Explanation -->
+            <div class="bg-white p-6 rounded-xl shadow-md mb-6">
+                <h3 class="text-2xl font-semibold text-gray-800 mb-3">How You Earn</h3>
+                <p class="text-gray-600">You earn points based on the weight or volume of clean, separated plastic you submit. Every submission processed and confirmed by a Government Agent adds to your total. Points can be redeemed monthly for cash transfers or vouchers for approved local goods.</p>
+            </div>
+
+            <!-- Activity Log -->
+            <h3 class="text-2xl font-semibold text-gray-800 mb-4 flex items-center"><i data-lucide="list-ordered" class="w-5 h-5 mr-2 text-kano-gold"></i> Your Activity Log</h3>
+            <div class="overflow-x-auto bg-white rounded-lg shadow-md">
+                <table class="min-w-full divide-y divide-gray-200">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Material & Quantity</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Points Earned</th>
+                            <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody class="bg-white divide-y divide-gray-200" id="rewards-activity">
+                        <!-- Activity will be dynamically populated here by renderRewards() -->
+                        <tr><td colspan="4" class="px-6 py-4 text-center text-gray-500 italic">Loading activity...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        
+        <!-- 6. About / Contact Page Section -->
+        <section id="about-contact" class="page-section hidden">
+            <h2 class="text-3xl font-bold text-kano-green mb-8 border-b-2 pb-2 border-kano-gold">About the Initiative & Portal</h2>
+
+            <div class="bg-white p-6 rounded-xl shadow-lg space-y-6">
+                <article>
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">Our Mission: A Cleaner Kano</h3>
+                    <p class="text-gray-600">This initiative, led by the Kano State Ministry of Environment, is dedicated to solving the big problem of plastic waste. By creating an easy collection and reward system, we want to stop illegal dumping, clean our rivers and drainage, and create good jobs in recycling.</p>
+                </article>
+
+                <article class="border-t pt-4">
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">Portal Development Showcase</h3>
+                    <p class="text-gray-600 font-medium">This website was built by <span class="text-challenge-blue font-bold">Muhammad Muawuya, a JSS 2 Student at Challenge International Academy</span>, with the help of our computer practical classes master, Idris Muktar Umar. This project is proudly shown for World Science Day.</p>
+                    <div class="mt-4 p-4 border rounded-lg bg-gray-50 text-sm">
+                        <p class="font-bold text-kano-green mb-1">How I Built the Website (Technical Explanation):</p>
+                        <ul class="list-disc list-inside text-gray-700 space-y-1">
+                            <li>**The Code (HTML, CSS, JavaScript):** I wrote this site using **HTML** (for the structure), **Tailwind CSS** (to make it look good and work well on all phones and computers), and **JavaScript** (to make the buttons and forms work).</li>
+                            <li>**The Database (Firebase Firestore):** To make the submissions and rewards real, I used **Firebase Firestore**. This is like a secure, real-time spreadsheet on the internet that helps the system keep track of every user's recycling report and points.</li>
+                            <li>**Color Choice:** I chose **Dark Green** (for the environment and Kano's land), **Gold** (for value, wealth, and the recycling rewards), and **White/Blue** (our school's colors, showing innovation). These colors make it look professional and official.</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <article class="border-t pt-4">
+                    <h3 class="text-2xl font-semibold text-gray-800 mb-2">Kano State Ministry of Environment</h3>
+                    <p class="text-gray-600 mb-3">
+                        For official government matters, please use the contacts below.
+                    </p>
+                    <p class="flex items-center text-gray-700 font-medium"><i data-lucide="mail" class="w-5 h-5 mr-2 text-kano-gold"></i> Email: info@environment.kn.gov.ng</p>
+                    <p class="flex items-center text-gray-700 font-medium"><i data-lucide="phone" class="w-5 h-5 mr-2 text-kano-gold"></i> Phone: +234 803 071 9901</p>
+                </article>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-kano-green text-white mt-12 p-6 text-center text-sm border-t-4 border-kano-gold">
+        <div class="max-w-7xl mx-auto">
+            &copy; 2025 Kano State Government. Environmental Recovery Initiative.
+        </div>
+    </footer>
+</body>
+</html>
